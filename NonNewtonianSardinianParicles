@@ -1,0 +1,167 @@
+// Run me into https://editor.p5js.org/
+
+let W = 800;
+let H = 800;
+
+let N = 100;     // number of particles
+let K = 3;       // number of kinds
+let CutoffD = 160;   // interaction distance, better be less than H/2 and W/2
+let radius_list = [ 10, 12, 16, 20 ] // Radius by type, must be at least of length K, better be in the 10 to CutoffD range
+let Dissipation = 0.995 // Each timeframe, v = v * Dissipation
+let VelocityCap = 1 // Speed limit, cap the speed vector to this value
+
+let particles = [];
+let interaction = [];
+
+let reset_cnt = 0
+
+// Interaction matrix I_ij:
+// Force on type i due to type j is proportional to I_ij
+// Unlike reality, matrix is generally NOT symmetric (non reciprocal forces)
+// I = s * (R + R^T)/2 + a * (R - R^T)/2 + d * Identity, where R = (1-r) + r * random(-1,1)
+let s =  0.2;   // symmetric (reciprocal) strength
+let a =  1.4;   // antisymmetric (chasing / circulation)
+let r =  0.2;   // random noise 
+let d =  0.2;   // diagonal self-interaction bias
+
+// Visual persistence:
+// 0   = no trails,  1 = infinite trails 
+// note: nonlinear, useful range is 0.5 to 1.0
+let tailFactor = 0.75;
+
+
+
+/////////////////////// CODE STARTS HERE ///////////////////////////////
+
+function makeInteractionMatrix(K, s, a, r, d) {
+  let I = Array.from({ length: K }, () =>    Array.from({ length: K }, () => 0)  );
+  // Random base matrix
+  let R = Array.from({ length: K }, () =>    Array.from({ length: K }, () => (1-r)+r*random(-1, 1))  );
+  print(R)
+  // Sym + Anti + Diag
+  for (let i = 0; i < K; i++) {
+    for (let j = 0; j < K; j++) {
+      if ( i != j ){
+        let sym  = 0.5 * (R[i][j] + R[j][i]);
+        I[i][j] = s * sym
+      }
+    }
+  }
+  for (let i = 0; i < K; i++) {
+    for (let j = 0; j < i; j++) {
+      if ( i != j ){
+        let anti = 0.5 * (R[i][j] + R[i][j]);
+        I[i][j] += a / 2 * anti;
+        I[j][i] -= a / 2 * anti;
+      }
+    }
+  }
+  for (let i = 0; i < K; i++) { I[i][i] += d; }
+  
+  return I;
+}
+
+function setup() {
+  createCanvas(W, H);
+  // set color mode to Hue Saturation Brightness Alpha
+  colorMode(HSB, 360, 100, 100, 100);
+
+  interaction = makeInteractionMatrix(K, s, a, r, d);
+
+  // Debug print
+  for (let i = 0; i < K; i++) {
+    print(interaction[i]);
+  }
+
+  // Initialize particles
+  for (let i = 0; i < N; i++) {
+    type = floor(random(K))
+    particles.push( new Particle(random(width), random(height), type, radius_list[type] ) );
+  }
+}
+
+function draw() {
+  // Semi-transparent background for trails
+  background(10, 10, 10, 100 * (1 - tailFactor));
+
+  for (let p of particles) p.applyForces(particles);
+  for (let p of particles) { p.update(); p.draw(); }
+}
+
+class Particle {
+  constructor(x, y, type, rad) {
+    this.pos = createVector(x, y);
+    this.vel = p5.Vector.random2D().mult(0.5);
+    this.type = type;
+    this.rad = rad
+  }
+
+  applyForces(others) {
+    let force = createVector(0, 0);
+
+    for (let o of others) {
+      if (o === this) continue;
+
+      // Minimum Image Convention (periodic boundaries)
+      let dx = o.pos.x - this.pos.x;
+      let dy = o.pos.y - this.pos.y;
+      dx -= width  * Math.round(dx / width);
+      dy -= height * Math.round(dy / height);
+
+      let d = createVector(dx, dy);
+      let dist = d.mag();
+      
+      if (dist > CutoffD) continue;
+      
+      let rij = this.rad/2+o.rad/2
+
+      // Failure, too close. Move this particle at random
+      if (dist < 0.3*(rij) ) {
+        this.pos.x = random(width)
+        this.pos.y = random(height);
+        print( "reset", this.type, reset_cnt, frameCount )
+        reset_cnt ++
+        break;
+      }
+      
+      d.normalize();
+
+      // Short Range repulsion. prop to d**6 ( not 1/d**6 )
+      if ( dist < 1.2*rij ) {
+        let d6 = ( rij - dist )**6
+        force.add( d.mult( - 2. * d6 ) );
+      } else {
+        // Long Lange interaction (attractive or repulsive)
+        let f = interaction[this.type][o.type];
+        let strength = f * (1 - (dist-rij) / CutoffD);
+        force.add(d.mult(strength));
+      }
+      
+    }
+
+    // Integrate, part I
+    this.vel.add(force);         // Newton, dt = 1.
+    this.vel.mult(Dissipation);  // dissipation
+    this.vel.limit(VelocityCap); // speed limit
+  }
+
+  update() {
+    // Integrate, part II
+    // positioned here to update pos after all forces
+    this.pos.add(this.vel);      // Newton, dt = 1.
+
+    // Periodic wrapping
+    if (this.pos.x < 0) this.pos.x += width;
+    if (this.pos.y < 0) this.pos.y += height;
+    if (this.pos.x > width)  this.pos.x -= width;
+    if (this.pos.y > height) this.pos.y -= height;
+  }
+
+  draw() {
+    noStroke();
+    let speedVal = map(this.vel.mag(), 0, VelocityCap, 50, 100);
+    let typeVal = map(this.type, 0, K, 0, 360)
+    fill(typeVal, 90, 100);
+    circle(this.pos.x, this.pos.y, this.rad);
+  }
+}
